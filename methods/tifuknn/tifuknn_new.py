@@ -64,12 +64,15 @@ def group_history_list(his_list, group_size):
 def temporal_decay_sum_history(data_set, key_set, output_size, group_size, within_decay_rate, group_decay_rate):
     sum_history = {}
     for key in key_set:
-        vec_list = data_set[key] # basket list
+        # if key not in data_set:  # 檢查 key 是否在 data_set 中
+        #     print(f"Key {key} not found in data_set. Skipping this key.")
+        #     continue  # 跳過這個 key
+        vec_list = data_set[key]  # basket list
         num_vec = len(vec_list) - 2
         his_list = []
-        for idx in range(1,num_vec+1):
+        for idx in range(1, num_vec + 1):
             his_vec = np.zeros(output_size)
-            decayed_val = np.power(within_decay_rate, num_vec-idx)
+            decayed_val = np.power(within_decay_rate, num_vec - idx)
             for ele in vec_list[idx]:
                 his_vec[ele] = decayed_val
             his_list.append(his_vec)
@@ -78,12 +81,13 @@ def temporal_decay_sum_history(data_set, key_set, output_size, group_size, withi
         his_vec = np.zeros(output_size)
         for idx in range(real_group_size):
             decayed_val = np.power(group_decay_rate, group_size - 1 - idx)
-            if idx>=len(grouped_list):
-                print( 'idx: '+ str(idx))
+            if idx >= len(grouped_list):
+                print('idx: ' + str(idx))
                 print('len(grouped_list): ' + str(len(grouped_list)))
-            his_vec += grouped_list[idx]*decayed_val
-        sum_history[key] = his_vec/real_group_size
+            his_vec += grouped_list[idx] * decayed_val
+        sum_history[key] = his_vec / real_group_size
     return sum_history
+
 
 def KNN(query_set, target_set, k):
     history_mat = []
@@ -92,6 +96,8 @@ def KNN(query_set, target_set, k):
     test_mat = []
     for key in query_set.keys():
         test_mat.append(query_set[key])
+    # print("history_mat:", history_mat)
+    # print("test_mat:", test_mat)
     # print('Finding k nearest neighbors...')
     nbrs = NearestNeighbors(n_neighbors=k, algorithm='brute').fit(history_mat)
     distances, indices = nbrs.kneighbors(test_mat)
@@ -143,16 +149,17 @@ def evaluate(data_history, training_key_set, test_key_set, input_size, group_siz
     return sum_history
 
 def main(argv):
-    # param setting
-    history_file = argv[1]
-    future_file = argv[2]
-    keyset_file = argv[3]
-    num_nearest_neighbors = int(argv[4])
-    within_decay_rate = float(argv[5])
-    group_decay_rate = float(argv[6])
-    alpha = float(argv[7])
-    group_size = int(argv[8])
-    topk = int(argv[9])
+    history_file = r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\jsondata\CRSP_history.json"
+    keyset_file = r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\keyset\CRSP_keyset_0.json"
+    num_nearest_neighbors = int(argv[3])     # 20
+    time_decay1 = float(argv[4])             # 0.8
+    time_decay2 = float(argv[5])             # 0.9
+    alpha = float(argv[6])                   # 0.5
+    group_size = int(argv[7])                # 4
+    topk = int(argv[8])                      # 10
+
+    within_decay_rate = time_decay1
+    group_decay_rate  = time_decay2
 
     with open(history_file, 'r') as f:
         data_history = json.load(f)
@@ -160,7 +167,7 @@ def main(argv):
         keyset = json.load(f)
 
     #vector size -> item num, get train meta test user list[]
-    input_size = keyset['item_num']
+    input_size = keyset['item_num']+1
     keyset_train = keyset['train']
     keyset_val = keyset['val']
     keyset_test = keyset['test']
@@ -179,10 +186,12 @@ def main(argv):
     print('Num. of top: ', topk)
     dataset_name = keyset_file.split('_')[0].split('/')[-1]
     keyset_ind = keyset_file.split('_')[-1].split('.')[0]
-    pred_path = dataset_name + '_pred'+keyset_ind+'.json'
+    pred_path = r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\methods\tifuknn\CRSP_pred0.json"
     with open(pred_path, 'w') as f:
         json.dump(pred_dict, f)
 
 
+
 if __name__ == '__main__':
+
     main(sys.argv)

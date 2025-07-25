@@ -83,7 +83,7 @@ class Beacon(Model):
                 self.loss = self.compute_loss(logits, self.y)
 
                 self.predictions = tf.nn.sigmoid(logits)
-                self.top_k_values, self.top_k_indices = tf.nn.top_k(self.predictions, 200)
+                self.top_k_values, self.top_k_indices = tf.nn.top_k(self.predictions, 151)
                 self.recall_at_k = self.compute_recall_at_topk(top_k)
 
             # Adam optimizer

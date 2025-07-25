@@ -12,7 +12,7 @@ from similarity import *
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Path the dataset (for now we only applied it to the instacart dataset)
-    parser.add_argument('--dataset', default='instacart', help="")
+    parser.add_argument('--dataset', default='CRSP', help="")
     parser.add_argument('--foldk', type=int)
     # Preprocessing args
     parser.add_argument('--item_threshold', default=10, type=int)
@@ -39,7 +39,7 @@ if __name__ == '__main__':
     print("recency:", recency, '\nasymmetry:', alpha, "\nlocality:", q)
     print('=============')
 
-    data_path = f'dataset/{dataset}_merged.json'
+    data_path = rf'C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\mergeddataset\CRSP_merged.json'
     with open(data_path, 'r') as f:
         data = json.load(f)
 
@@ -127,11 +127,13 @@ if __name__ == '__main__':
     # if not os.path.exist('pred/'):
     #     os.mkdir('pred/')
 
-    keyset_path = f'../../keyset/{dataset}_keyset_{foldk}.json'
+    keyset_path = f'C:/Users/user/NBR-Project/A-Next-Basket-Recommendation-Reality-Check/keyset/{dataset}_keyset_0.json'
     with open(keyset_path, 'r') as f:
         keyset = json.load(f)
     test_uid = keyset['test']
-    pred_path = f'pred/{dataset}_pred{foldk}.json'
+    pred_dir  = r'C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\methods\upcf\pred'
+    os.makedirs(pred_dir, exist_ok=True)
+    pred_path = os.path.join(pred_dir, f'{dataset}_pred_upcf.json')
     ####
     pred_dict = dict()
     for uid in test_uid:

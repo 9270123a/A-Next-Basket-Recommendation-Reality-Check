@@ -1,0 +1,20 @@
+{
+    "data": "CRSP",
+    "save_model_folder": "DNNTSP",
+  
+    "history_path": "C:\\Users\\user\\NBR-Project\\A-Next-Basket-Recommendation-Reality-Check\\jsondata\\CRSP_history.json",
+    "future_path":  "C:\\Users\\user\\NBR-Project\\A-Next-Basket-Recommendation-Reality-Check\\jsondata\\CRSP_future.json",
+    "keyset_path":  "C:\\Users\\user\\NBR-Project\\A-Next-Basket-Recommendation-Reality-Check\\keyset\\CRSP_keyset_0.json",
+  
+    "item_embed_dim": 32,
+    "items_total": 151,
+  
+    "cuda": 0,
+    "loss_function": "multi_label_soft_loss",
+    "epochs": 40,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "optim": "Adam",
+    "weight_decay": 0
+  }
+  

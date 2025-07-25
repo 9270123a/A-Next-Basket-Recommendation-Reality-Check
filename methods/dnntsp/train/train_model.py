@@ -9,8 +9,8 @@ from tensorboardX import SummaryWriter
 import sys
 sys.path.append("..")
 
-from utils.util import save_model, convert_to_gpu, convert_all_data_to_gpu
-from utils.metric import get_metric
+from util import save_model, convert_to_gpu, convert_all_data_to_gpu
+from metric import get_metric
 
 from tqdm import tqdm
 import warnings

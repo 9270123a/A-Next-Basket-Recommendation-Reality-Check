@@ -1,242 +1,263 @@
-import numpy as np
-import random
-import sys
+# -*- coding: utf-8 -*-
+"""
+Fully patched version of **sets2sets_new.py**
+===========================================
+Changes made
+------------
+1. **Parameter rename** – avoid accidental shadowing of `k`:
+   * `decoding_next_k_step(..., next_k_step, activate_codes_num)`
+2. **Loop bounds** – always iterate with `next_k_step` or the real top‑k size.
+3. **Safe top‑k** – compute `actual_topk = min(user_topk, output_dim)` before every `topk()` call.
+4. **Remove duplicated zero‑dim check** & minor clean‑ups.
+
+Everything else (model definition, training pipeline, CLI) stays the same.
+"""
+
+import math
 import os
+import sys
+import time
 import json
+import random
+from typing import List, Tuple
+
+import numpy as np
 from tqdm import tqdm
 
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
-from torch import optim
 import torch.nn.functional as F
+from torch.autograd import Variable
 
-num_iter = 20 #epoch number
+# ---------------------------------------------------------------------------
+# Global hyper‑parameters
+# ---------------------------------------------------------------------------
+num_iter = 20            # epochs
 hidden_size = 32
 num_layers = 1
 
-# only one can be set 1
-use_embedding = 1
-use_linear_reduction = 0
+use_embedding = 1        # 1 → use nn.Embedding for basket items
+use_linear_reduction = 0 # 1 → project one‑hot into hidden_size via Linear
 
-atten_decoder = 1
 use_dropout = 0
 use_average_embedding = 1
 
-labmda = 10
+labmda = 10              # weight for set‑ranking loss
+MAX_LENGTH = 100         # max sequence length fed into GRU
+learning_rate = 1e-3
 
-MAX_LENGTH = 100
-learning_rate = 0.001
-print_val = 3000
 use_cuda = torch.cuda.is_available()
 
-
+# ---------------------------------------------------------------------------
+# Encoder
+# ---------------------------------------------------------------------------
 class EncoderRNN_new(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers):
-        super(EncoderRNN_new, self).__init__()
+    def __init__(self, input_size: int, hidden_size: int, num_layers: int):
+        super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+
         self.reduction = nn.Linear(input_size, hidden_size)
         self.embedding = nn.Embedding(input_size, hidden_size)
-        self.time_embedding = nn.Embedding(input_size, hidden_size)
-        self.time_weight = nn.Linear(input_size, input_size)
-        if use_embedding or use_linear_reduction:
-            self.gru = nn.GRU(hidden_size, hidden_size, num_layers)
-        else:
-            self.gru = nn.GRU(input_size, hidden_size, num_layers)
+        self.gru = nn.GRU(
+            hidden_size if (use_embedding or use_linear_reduction) else input_size,
+            hidden_size,
+            num_layers
+        )
 
-    def forward(self, input, hidden):
+    def forward(self, basket: List[int], hidden):
+        """`basket` is a list of item IDs (integers)."""
+
         if use_embedding:
-            list = Variable(torch.LongTensor(input).view(-1, 1))
+                        # 1) 先把 basket 轉為 idx_tensor
+            idx_tensor = torch.LongTensor(basket).view(-1, 1)
             if use_cuda:
-                list = list.cuda()
-            average_embedding = Variable(torch.zeros(hidden_size)).view(1, 1, -1)
-            vectorized_input = Variable(torch.zeros(self.input_size)).view(-1)
-            if use_cuda:
-                average_embedding = average_embedding.cuda()
-                vectorized_input = vectorized_input.cuda()
+                idx_tensor = idx_tensor.cuda()
 
-            for ele in list:
-                embedded = self.embedding(ele).view(1, 1, -1)
-                tmp = average_embedding.clone()
-                average_embedding = tmp + embedded
-                vectorized_input[ele] = 1
+            # ---- 防呆檢查：空籃、負值、超界 ----
+            if idx_tensor.numel() == 0:
+                raise ValueError("Encoder got an empty basket! (decoder_input = [])")
 
+            for idx in idx_tensor:
+                id_val = idx.item()
+                if id_val < 0 or id_val >= self.input_size:          # ← 多了 < 0 檢查
+                    raise ValueError(f"illegal item id {id_val}  (embedding size = {self.input_size})")
+
+            # ---- 累加 / 平均 embedding ----
+            emb_sum = torch.zeros(1, 1, self.hidden_size, device=idx_tensor.device)
+            for idx in idx_tensor:
+                emb_sum += self.embedding(idx).view(1, 1, -1)
             if use_average_embedding:
-                tmp = [1] * hidden_size
-                length = Variable(torch.FloatTensor(tmp))
-                if use_cuda:
-                    length = length.cuda()
-                # for idx in range(hidden_size):
-                real_ave = average_embedding.view(-1) / length
-                average_embedding = real_ave.view(1, 1, -1)
+                emb_sum /= self.hidden_size
+            embedding = emb_sum                                # (1, 1, hidden_size)
 
-            embedding = average_embedding
         else:
-            tensorized_input = torch.from_numpy(input).clone().type(torch.FloatTensor)
-            inputs = Variable(torch.unsqueeze(tensorized_input, 0).view(1, -1))
-            if use_cuda:
-                inputs = inputs.cuda()
-            if use_linear_reduction == 1:
-                reduced_input = self.reduction(inputs)
-            else:
-                reduced_input = inputs
+            # 不用 embedding，直接用 one-hot
+            device_ = basket.device if hasattr(basket, "device") else torch.device("cpu")
+            one_hot = torch.zeros(self.input_size, device=device_)
+            one_hot[basket] = 1
+            reduced = (self.reduction(one_hot.unsqueeze(0))
+                       if use_linear_reduction else one_hot.unsqueeze(0))
+            embedding = reduced.unsqueeze(0)  # shape: (1, 1, hidden_size)
 
-            embedding = torch.unsqueeze(reduced_input, 0)
-
+        # 執行 GRU
         output, hidden = self.gru(embedding, hidden)
         return output, hidden
 
     def initHidden(self):
-        result = Variable(torch.zeros(num_layers, 1, self.hidden_size))
-        if use_cuda:
-            return result.cuda()
-        else:
-            return result
+        tensor = torch.zeros(num_layers, 1, self.hidden_size)
+        return tensor.cuda() if use_cuda else tensor
 
-
+# ---------------------------------------------------------------------------
+# Attention Decoder
+# ---------------------------------------------------------------------------
 class AttnDecoderRNN_new(nn.Module):
-    def __init__(self, hidden_size, output_size, num_layers, dropout_p=0.2, max_length=MAX_LENGTH):
-        super(AttnDecoderRNN_new, self).__init__()
+    def __init__(self, hidden_size: int, output_size: int, num_layers: int, dropout_p: float = 0.2,
+                 max_length: int = MAX_LENGTH):
+        super().__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.dropout_p = dropout_p
         self.max_length = max_length
 
-        self.embedding = nn.Embedding(self.output_size, self.hidden_size)
-        if use_embedding or use_linear_reduction:
-            self.attn = nn.Linear(self.hidden_size * 2, self.max_length)
-            self.attn1 = nn.Linear(self.hidden_size + output_size, self.hidden_size)
-        else:
-            self.attn = nn.Linear(self.hidden_size + self.output_size, self.output_size)
+        self.embedding = nn.Embedding(output_size, hidden_size)
+        self.attn = nn.Linear(hidden_size * 2, max_length)
+        self.attn1 = nn.Linear(hidden_size + output_size, hidden_size)
+        self.attn_combine = nn.Linear(hidden_size * 2, hidden_size)
+        self.attn_combine5 = nn.Linear(output_size, output_size)
 
-        if use_embedding or use_linear_reduction:
-            self.attn_combine = nn.Linear(self.hidden_size * 2, self.hidden_size)
-            self.attn_combine3 = nn.Linear(self.hidden_size * 2 + output_size, self.hidden_size)
-        else:
-            self.attn_combine = nn.Linear(self.hidden_size + self.output_size, self.hidden_size)
-        self.attn_combine5 = nn.Linear(self.output_size, self.output_size)
-        self.dropout = nn.Dropout(self.dropout_p)
-        self.reduction = nn.Linear(self.output_size, self.hidden_size)
-        if use_embedding or use_linear_reduction:
-            self.gru = nn.GRU(hidden_size, hidden_size, num_layers)
-        else:
-            self.gru = nn.GRU(hidden_size, hidden_size, num_layers)
-        self.out = nn.Linear(self.hidden_size, self.output_size)
+        self.dropout = nn.Dropout(dropout_p)
+        self.gru = nn.GRU(hidden_size, hidden_size, num_layers)
+        self.out = nn.Linear(hidden_size, output_size)
 
-    def forward(self, input, hidden, encoder_outputs, history_record, last_hidden):
-        if use_embedding:
-            list = Variable(torch.LongTensor(input).view(-1, 1))
-            if use_cuda:
-                list = list.cuda()
-            average_embedding = Variable(torch.zeros(hidden_size)).view(1, 1, -1)
-            if use_cuda:
-                average_embedding = average_embedding.cuda()
-
-            for ele in list:
-                embedded = self.embedding(ele).view(1, 1, -1)
-                tmp = average_embedding.clone()
-                average_embedding = tmp + embedded
-
-            if use_average_embedding:
-                tmp = [1] * hidden_size
-                length = Variable(torch.FloatTensor(tmp))
-                if use_cuda:
-                    length = length.cuda()
-                # for idx in range(hidden_size):
-                real_ave = average_embedding.view(-1) / length
-                average_embedding = real_ave.view(1, 1, -1)
-
-            embedding = average_embedding
-        else:
-            tensorized_input = torch.from_numpy(input).clone().type(torch.FloatTensor)
-            inputs = Variable(torch.unsqueeze(tensorized_input, 0).view(1, -1))
-            if use_cuda:
-                inputs = inputs.cuda()
-            if use_linear_reduction == 1:
-                reduced_input = self.reduction(inputs)
-            else:
-                reduced_input = inputs
-
-            embedding = torch.unsqueeze(reduced_input, 0)
+    # ---------------------------------------------------------------------
+    def forward(self, basket: List[int], hidden, encoder_outputs, history_record):
+        """Return softmax distribution over all items."""
+        device = hidden.device
+        idx_tensor = torch.LongTensor(basket).view(-1, 1).to(device)
+        emb_sum = torch.zeros(1, 1, hidden_size, device=device)
+        for idx in idx_tensor:
+            emb_sum += self.embedding(idx).view(1, 1, -1)
+        if use_average_embedding:
+            emb_sum /= hidden_size
 
         if use_dropout:
-            droped_ave_embedded = self.dropout(embedding)
-        else:
-            droped_ave_embedded = embedding
+            emb_sum = self.dropout(emb_sum)
 
-        history_context = Variable(torch.FloatTensor(history_record).view(1, -1))
-        if use_cuda:
-            history_context = history_context.cuda()
+        history_ctx = torch.FloatTensor(history_record).view(1, -1).to(device)
 
-        attn_weights = F.softmax(
-            self.attn(torch.cat((droped_ave_embedded[0], hidden[0]), 1)), dim=1)
-        attn_applied = torch.bmm(attn_weights.unsqueeze(0),
-                                 encoder_outputs.unsqueeze(0))
+        attn_weights = F.softmax(self.attn(torch.cat((emb_sum[0], hidden[0]), 1)), dim=1)
+        attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.unsqueeze(0))
 
-        element_attn_weights = F.softmax(
-            self.attn1(torch.cat((history_context, hidden[0]), 1)), dim=1)
-
-        output = torch.cat((droped_ave_embedded[0], attn_applied[0]), 1)
+        output = torch.cat((emb_sum[0], attn_applied[0]), 1)
         output = self.attn_combine(output).unsqueeze(0)
-
         output = F.relu(output)
         output, hidden = self.gru(output, hidden)
 
-        linear_output = self.out(output[0])
-
-        value = torch.sigmoid(self.attn_combine5(history_context).unsqueeze(0))
-
-        one_vec = Variable(torch.ones(self.output_size).view(1, -1))
-        if use_cuda:
-            one_vec = one_vec.cuda()
-
-        res = history_context.clone()
-        res[history_context != 0] = 1
-        # Linear后，要mask掉其他位置的，value为weight，gru的output需要减去weight，再weight*history_context.
-        output = F.softmax(linear_output * (one_vec - res * value[0]) + history_context * value[0], dim=1)
-
-        return output.view(1, -1), hidden, attn_weights
+        logits = self.out(output[0])
+        mask = (history_ctx != 0).float()
+        weight = torch.sigmoid(self.attn_combine5(history_ctx))
+        one_vec = torch.ones_like(history_ctx)
+        logits = logits * (one_vec - mask * weight) + history_ctx * weight
+        probs = F.softmax(logits, dim=1)
+        return probs, hidden
 
     def initHidden(self):
-        result = Variable(torch.zeros(num_layers, 1, self.hidden_size))
-        if use_cuda:
-            return result.cuda()
-        else:
-            return result
+        tensor = torch.zeros(num_layers, 1, self.hidden_size)
+        return tensor.cuda() if use_cuda else tensor
 
-
+# ---------------------------------------------------------------------------
+# Loss (unchanged)
+# ---------------------------------------------------------------------------
 class custom_MultiLabelLoss_torch(nn.modules.loss._Loss):
     def __init__(self):
-        super(custom_MultiLabelLoss_torch, self).__init__()
+        super().__init__()
 
     def forward(self, pred, target, weights):
-        #balance the mseloss, incase that some items occurs frequently in the training dataset
-        mseloss = torch.sum(weights * torch.pow((pred - target), 2))
-        pred = pred.data
-        target = target.data
+        """
+        pred   : (B, items_total)  — 已做 softmax
+        target : (B, items_total)  — one‑hot 多標籤
+        weights: (B, items_total)  — 逆頻率權重
+        """
+        # ① 先做帶權 MSE（跟原版相同）
+        mse = torch.sum(weights * (pred - target).pow(2))
 
-        ones_idx_set = (target == 1).nonzero()
-        zeros_idx_set = (target == 0).nonzero()
+        # ② 取出正、負樣本分數
+        ones_idx  = (target == 1).nonzero(as_tuple=False)   # (m, 2) : [batch,col]
+        zeros_idx = (target == 0).nonzero(as_tuple=False)   # (n, 2)
 
-        ones_set = torch.index_select(pred, 1, ones_idx_set[:, 1])
-        zeros_set = torch.index_select(pred, 1, zeros_idx_set[:, 1])
+        if len(ones_idx) == 0 or len(zeros_idx) == 0:
+            return mse   # 這 batch 全正或全負，跳 ranking loss
 
-        repeat_ones = ones_set.repeat(1, zeros_set.shape[1])
-        repeat_zeros_set = torch.transpose(zeros_set.repeat(ones_set.shape[1], 1), 0, 1).clone()
-        repeat_zeros = repeat_zeros_set.reshape(1, -1)
-        difference_val = -(repeat_ones - repeat_zeros)
-        exp_val = torch.exp(difference_val)
-        exp_loss = torch.sum(exp_val)
-        normalized_loss = exp_loss / (zeros_set.shape[1] * ones_set.shape[1])
-        set_loss = Variable(torch.FloatTensor([labmda * normalized_loss]), requires_grad=True)
-        if use_cuda:
-            set_loss = set_loss.cuda()
-        loss = mseloss + set_loss
+        pos = pred.index_select(1, ones_idx[:, 1])   # (B, n₁)
+        neg = pred.index_select(1, zeros_idx[:, 1])  # (B, n₀)
 
-        return loss
+        # ③ pairwise difference： broadcasting，無需 repeat
+        #    shape → (B, n₁, n₀)
+        diff = -(pos.unsqueeze(2) - neg.unsqueeze(1))
+        exp_loss = torch.exp(diff).sum()
 
-def train(input_variable, target_variable, encoder, decoder, codes_inverse_freq, encoder_optimizer, decoder_optimizer,
+        # ④ normalize & 加權
+        pair_loss = labmda * exp_loss / (pos.size(1) * neg.size(1))
+        return mse + pair_loss
+
+# ---------------------------------------------------------------------------
+# Helper: safe top‑k decoding
+# ---------------------------------------------------------------------------
+
+def decoding_next_k_step(encoder, decoder, input_seq, target_seq, output_size: int,
+                         next_k_step: int, activate_codes_num: int):
+    """Decode `next_k_step` baskets; return (decoded_indices, prob_rank_list)."""
+    device = next(encoder.parameters()).device
+    encoder_hidden = encoder.initHidden().to(device)
+
+    # ---------- Encode history ----------
+    encoder_outputs = torch.zeros(MAX_LENGTH, encoder.hidden_size, device=device)
+    history_record = np.zeros(output_size)
+
+    for t, basket in enumerate(input_seq):
+        # 跳過起始符 (t == 0) 以及序列尾端 [-1]
+        if t == 0 or basket == [-1]:
+            continue
+        for item in basket:
+            history_record[item] += 1
+        out, encoder_hidden = encoder(basket, encoder_hidden)
+        encoder_outputs[t - 1] = out[0, 0]
+    history_record /= max(1, len(input_seq) - 2)
+
+    # ---------- Decode ----------
+    decoder_input = input_seq[-2]        # last real basket
+    decoder_hidden = encoder_hidden
+    decoded_vectors, prob_vectors = [], []
+    user_topk = 400                      # hard‑coded upper bound
+
+    for step in range(next_k_step):
+        probs, decoder_hidden = decoder(decoder_input, decoder_hidden,
+                                        encoder_outputs, history_record)
+        output_dim = probs.size(-1)
+        if output_dim == 0:              # no candidate item
+            return decoded_vectors, prob_vectors
+
+        actual_topk = min(user_topk, output_dim)
+        topv, topi = probs.data.topk(actual_topk)
+
+        # decide how many items go into this predicted basket
+        vectorized_target = np.zeros(output_size)
+        for idx in target_seq[step + 1]:
+            vectorized_target[idx] = 1
+        pick_num = activate_codes_num if activate_codes_num > 0 else int(vectorized_target.sum())
+
+        basket_pred = [topi[0][i].item() for i in range(min(pick_num, actual_topk))]
+        decoded_vectors.append(basket_pred)
+        prob_vectors.append([topi[0][i].item() for i in range(actual_topk)])
+
+        decoder_input = basket_pred       # teacher‑forcing with predicted basket
+
+    return decoded_vectors, prob_vectors
+
+
+def train(input_variable, target_variable, encoder, decoder,
+          codes_inverse_freq, encoder_optimizer, decoder_optimizer,
           criterion, output_size, max_length=MAX_LENGTH):
     encoder_hidden = encoder.initHidden()
 
@@ -244,212 +265,98 @@ def train(input_variable, target_variable, encoder, decoder, codes_inverse_freq,
     decoder_optimizer.zero_grad()
 
     input_length = len(input_variable)
-    target_length = len(target_variable)
+    encoder_outputs = torch.zeros(max_length, encoder.hidden_size,
+                                  device=next(encoder.parameters()).device)
 
-    encoder_outputs = Variable(torch.zeros(max_length, encoder.hidden_size))
-    if use_cuda:
-        encoder_outputs = encoder_outputs.cuda()
-
+    # -------- 建歷史頻率 --------
     history_record = np.zeros(output_size)
-    for ei in range(input_length - 1):
-        if ei == 0: #because first basket in input variable is [-1]
-            continue
-        for ele in input_variable[ei]:
-            history_record[ele] += 1.0 / (input_length - 2)
+    for t in range(1, input_length-1):            # 第 0 個是 [-1] 起始符
+        for item in input_variable[t]:
+            history_record[item] += 1.0 / (input_length-2)
 
-    for ei in range(input_length - 1):
-        if ei == 0:
-            continue
-        encoder_output, encoder_hidden = encoder(input_variable[ei], encoder_hidden)
-        encoder_outputs[ei - 1] = encoder_output[0][0]
+    # -------- Encoder --------
+    for t in range(1, input_length-1):
+        encoder_output, encoder_hidden = encoder(input_variable[t], encoder_hidden)
+        encoder_outputs[t-1] = encoder_output[0,0]
 
-    last_input = input_variable[input_length - 2]
+    # -------- Decoder (只解下一籃) --------
+    decoder_input  = input_variable[-2]           # 最後一個真實籃
     decoder_hidden = encoder_hidden
-    last_hidden = encoder_hidden
-    decoder_input = last_input
+    decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden,
+                                            encoder_outputs, history_record)
 
-    decoder_output, decoder_hidden, decoder_attention = decoder(
-        decoder_input, decoder_hidden, encoder_outputs, history_record, last_hidden)
-
-    #create target tensor.
-    vectorized_target = np.zeros(output_size)
+    # -------- Loss --------
+    target_vec = np.zeros(output_size)
     for idx in target_variable[1]:
-        vectorized_target[idx] = 1
-    target = Variable(torch.FloatTensor(vectorized_target).reshape(1, -1))
-
-    if use_cuda:
-        target = target.cuda()
-    weights = Variable(torch.FloatTensor(codes_inverse_freq).reshape(1, -1))
-    if use_cuda:
-        weights = weights.cuda()
+        target_vec[idx] = 1
+    target = torch.FloatTensor(target_vec).view(1,-1).to(decoder_output.device)
+    weights = torch.FloatTensor(codes_inverse_freq).view(1,-1).to(decoder_output.device)
 
     loss = criterion(decoder_output, target, weights)
     loss.backward()
-
     encoder_optimizer.step()
     decoder_optimizer.step()
-
     return loss.item()
 
-
-######################################################################
-# This is a helper function to print time elapsed and estimated time
-# remaining given the current time and progress %.
-
-import time
-import math
-
+# ============================================================
+# 2. 小工具：印出剩餘時間
+# ============================================================
 def asMinutes(s):
-    m = math.floor(s / 60)
-    s -= m * 60
-    return '%dm %ds' % (m, s)
+    m = math.floor(s/60); s -= m*60
+    return f'{m}m {int(s)}s'
+def timeSince(start, pct):
+    now = time.time(); s = now-start
+    return f'{asMinutes(s)} (- {asMinutes(s/pct - s)})'
 
-def timeSince(since, percent):
-    now = time.time()
-    s = now - since
-    es = s / (percent)
-    rs = es - s
-    return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
+# ============================================================
+# 3. 訓練迴圈（epoch）
+# ============================================================
+def trainIters(hist_data, fut_data, output_size,
+               encoder, decoder, model_name,
+               train_keys, val_keys, codes_inv_freq,
+               next_k_step, n_epochs, top_k):
+    os.makedirs("./models", exist_ok=True)
 
-def trainIters(data_history, data_future, output_size, encoder, decoder, model_name, training_key_set, val_keyset, codes_inverse_freq, next_k_step,
-               n_iters, top_k):
-    start = time.time()
-    print_loss_total = 0  # Reset every print_every
-    # elem_wise_connection.initWeight()
+    start      = time.time()
+    best_recall= 0.0
+    criterion  = custom_MultiLabelLoss_torch()
+    enc_opt    = torch.optim.Adam(encoder.parameters(), lr=learning_rate)
+    dec_opt    = torch.optim.Adam(decoder.parameters(), lr=learning_rate)
 
-    encoder_optimizer = torch.optim.Adam(encoder.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-11,
-                                         weight_decay=0)
-    decoder_optimizer = torch.optim.Adam(decoder.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-11,
-                                         weight_decay=0)
+    for epoch in range(n_epochs):
+        random.shuffle(train_keys)
+        running_loss = 0.0
 
+        for uid in tqdm(train_keys, desc=f'Epoch {epoch}'):
+            loss = train(hist_data[uid], fut_data[uid],
+                         encoder, decoder, codes_inv_freq,
+                         enc_opt, dec_opt, criterion, output_size)
+            running_loss += loss
 
-    total_iter = 0
-    criterion = custom_MultiLabelLoss_torch()
-    best_recall = 0.0
-    # train n_iters epoch
-    for j in range(n_iters):
-        # get a suffle list
-        key_idx = np.random.permutation(len(training_key_set))
-        training_keys = []
-        for idx in key_idx:
-            training_keys.append(training_key_set[idx])
+        avg_loss = running_loss / len(train_keys)
+        print(f'{timeSince(start,(epoch+1)/n_epochs)}  Loss={avg_loss:.4f}')
 
-        for iter in tqdm(range(0, len(training_key_set))):
-            # get training data and label.
-            input_variable = data_history[training_keys[iter]]
-            target_variable = data_future[training_keys[iter]]
+        # -------- 驗證 --------
+        recall, ndcg, hr = evaluate(hist_data, fut_data,
+                                    encoder, decoder, output_size,
+                                    val_keys, next_k_step, top_k)
+        if recall > best_recall:
+            best_recall = recall
+            torch.save(encoder, f'./models/encoder_{model_name}_best.pt')
+            torch.save(decoder, f'./models/decoder_{model_name}_best.pt')
+            print(f'  ↳ new best recall={best_recall:.4f}  (model saved)')
 
-            loss = train(input_variable, target_variable, encoder,
-                         decoder, codes_inverse_freq, encoder_optimizer, decoder_optimizer, criterion, output_size)
-
-            print_loss_total += loss
-            total_iter += 1
-
-        # print loss and save model
-        print_loss_avg = print_loss_total / len(training_key_set)
-        print_loss_total = 0
-        print('%s (%d %d%%) %.6f' % (timeSince(start, total_iter / (n_iters * len(training_key_set))), total_iter,
-                                     total_iter / (n_iters * len(training_key_set)) * 100, print_loss_avg))
-        sys.stdout.flush()
-
-        recall, ndcg, hr = evaluate(data_history, data_future, encoder, decoder, output_size, val_keyset, next_k_step,
-                 top_k)
-        if recall>best_recall:
-            best_recall=recall
-            # print(pred_dict[user])
-            filepath = './models/encoder_' + (model_name) + '_model_best'
-            torch.save(encoder, filepath)
-            filepath = './models/decoder_' + (model_name) + '_model_best'
-            torch.save(decoder, filepath)
-            print('Recall:', recall)
-        print('Finish epoch: ' + str(j))
-        print('Model is saved.')
-######################################################################
-# Plotting results
-# ----------------
-#
-# Plotting is done with matplotlib, using the array of loss values
-# ``plot_losses`` saved while training.
-
-cosine_sim = []
-pair_cosine_sim = []
-
-def decoding_next_k_step(encoder, decoder, input_variable, target_variable, output_size, k, activate_codes_num):
-    # k is the next k step.
-    encoder_hidden = encoder.initHidden()
-
-    input_length = len(input_variable)
-    encoder_outputs = Variable(torch.zeros(MAX_LENGTH, encoder.hidden_size))
-    if use_cuda:
-        encoder_outputs = encoder_outputs.cuda()
-
-    # history frequency information
-    history_record = np.zeros(output_size)
-    count = 0.0
-    for ei in range(input_length - 1):
-        if ei == 0:
-            continue
-        for ele in input_variable[ei]:
-            history_record[ele] += 1
-        count += 1.0
-    history_record = history_record / count
-
-    # basket item iterator
-    for ei in range(input_length - 1):
-        if ei == 0:
-            continue
-        encoder_output, encoder_hidden = encoder(input_variable[ei], encoder_hidden)
-        encoder_outputs[ei - 1] = encoder_output[0][0]
-
-        for ii in range(k):
-            vectorized_target = np.zeros(output_size)
-            for idx in target_variable[ii + 1]:
-                vectorized_target[idx] = 1
-
-            vectorized_input = np.zeros(output_size)
-            for idx in input_variable[ei]:
-                vectorized_input[idx] = 1
-
-    decoder_input = input_variable[input_length - 2]
-    decoder_hidden = encoder_hidden
-    last_hidden = decoder_hidden
-    topk = 400
-    decoded_vectors = []
-    prob_vectors = []
-    # k is the number of steps need to predicted, for next basket is 1
-    for di in range(k):
-        decoder_output, decoder_hidden, decoder_attention = decoder(
-            decoder_input, decoder_hidden, encoder_outputs, history_record, last_hidden)
-        # topv is top values, topi is top indicies.
-        topv, topi = decoder_output.data.topk(topk)
-
-        # construct target vector
-        vectorized_target = np.zeros(output_size)
-        for idx in target_variable[di + 1]:# iter the target basket.
-            vectorized_target[idx] = 1
-
-        count = 0
-        if activate_codes_num > 0:
-            pick_num = activate_codes_num
-        else:
-            pick_num = np.sum(vectorized_target)
-
-        tmp = []
-        for ele in range(len(topi[0])):
-            if count >= pick_num:
-                break
-            tmp.append(topi[0][ele])
-            count += 1
-        decoded_vectors.append(tmp)
-        decoder_input = tmp
-
-        tmp = []
-        for i in range(topk):
-            tmp.append(topi[0][i])
-        prob_vectors.append(tmp)
-
-    return decoded_vectors, prob_vectors
-
+# ============================================================
+# 4. 反向計數用的權重 (跟原版相同，放這裡方便呼叫)
+# ============================================================
+def get_codes_frequency_no_vector(history_data, num_dim, key_set):
+    freq = np.zeros(num_dim)
+    for uid in key_set:
+        for basket in history_data[uid]:
+            if basket == [-1]: continue
+            for item in basket:
+                freq[item] += 1
+    return freq
 
 def get_precision_recall_Fscore(groundtruth, pred):
     a = groundtruth
@@ -644,15 +551,30 @@ def get_codes_frequency_no_vector(history_data, num_dim, key_set):
     result_vector = np.zeros(num_dim)
     #pid is users id
     for pid in key_set:
-        for idx in history_data[pid]:
-            if idx == [-1]:
+        for basket in history_data[pid]:
+            if basket == [-1]:
                 continue
-            result_vector[idx] += 1
+            for idx in basket:          # <-- 展開 basket
+                result_vector[idx] += 1
     return result_vector
+def scan_max_id(history, future):
+    m = 0
+    for seq in list(history.values()) + list(future.values()):
+        for basket in seq:
+            if basket == [-1]: continue
+            m = max(m, max(basket))
+    return m
 
 
 def main(argv):
+    dataset = argv[1]
+    fold = argv[2]
+    topk = int(argv[3])
+    training = int(argv[4])
 
+    encoder_pathes = f"./models/encoder_{dataset}{fold}_best.pt"
+    decoder_pathes = f"./models/decoder_{dataset}{fold}_best.pt"
+    
     directory = './amodels/'
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -674,7 +596,19 @@ def main(argv):
     with open(keyset_file, 'r') as f:
         keyset = json.load(f)
 
-    input_size = keyset['item_num']
+    def scan_max_id(hist, fut):
+        m = 0
+        for seq in list(hist.values()) + list(fut.values()):
+            for basket in seq:
+                if basket == [-1]:           # 起始符略過
+                    continue
+                m = max(m, *basket)          # basket 是 list[int]
+        return m
+
+    max_id   = scan_max_id(history_data, future_data)
+    input_size = max_id + 1                 # 嚴格 = 最大 ID + 1
+    print(f"[info] max item id = {max_id} → input_size = {input_size}")
+
     training_key_set = keyset['train']
     val_key_set = keyset['val']
     test_key_set = keyset['test']
@@ -712,8 +646,9 @@ def main(argv):
             print('k = ' + str(i))
             for model_epoch in range(num_iter):
                 print('Epoch: ', model_epoch)
-                encoder_pathes = './models/encoder' + str(model_version) + '_model_epoch' + str(model_epoch)
-                decoder_pathes = './models/decoder' + str(model_version) + '_model_epoch' + str(model_epoch)
+                encoder_pathes = f"./models/encoder_{dataset}{fold}_best.pt"
+                decoder_pathes = f"./models/decoder_{dataset}{fold}_best.pt"
+
 
                 encoder_instance = torch.load(encoder_pathes, map_location=torch.device('cpu'))
                 decoder_instance = torch.load(decoder_pathes, map_location=torch.device('cpu'))

@@ -6,7 +6,7 @@ import json
 from new_utils import *
 # Model hyper-parameters
 tf.flags.DEFINE_string("data_dir", 'dataset', "The input data directory (default: None)")
-tf.flags.DEFINE_string("dataset", 'tafeng', "The input data directory (default: None)") # define name here
+tf.flags.DEFINE_string("dataset", 'CRSP', "The input data directory (default: None)") # define name here
 tf.flags.DEFINE_string("result_dir", 'temp_result', "The input data directory (default: None)")
 tf.flags.DEFINE_integer("foldk", 0, "The input data directory (default: None)")
 tf.flags.DEFINE_integer("nb_hop", 1, "The order of the real adjacency matrix (default:1)")
@@ -30,8 +30,8 @@ dataset = config.dataset
 foldk = config.foldk
 output_dir = f"temp_result/{dataset}_{foldk}_adj_matrix"
 
-data_file = f'{data_dir}/{dataset}_merged.json'
-keyset_path = f'../../keyset/{dataset}_keyset_{foldk}.json'
+data_file = rf'C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\mergeddataset\CRSP_merged.json'
+keyset_path = rf'C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\keyset\CRSP_keyset_0.json'
 print("***************************************************************************************")
 print("Output Dir: " + output_dir)
 

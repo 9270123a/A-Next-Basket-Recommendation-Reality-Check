@@ -1,55 +1,37 @@
-import json
-import glob
-from Explainablebasket import *
-import argparse
-import os
+import json, os, torch
+from Explainablebasket import NBRNet
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='dunnhumby', help='Dataset')
-    parser.add_argument('--fold_id', type=int, default=0, help='x')
-    args = parser.parse_args()
-    dataset = args.dataset
-    fold_id = args.fold_id
-    history_file = '../jsondata/'+dataset+'_history.json'
-    future_file = '../jsondata/'+dataset+'_future.json'
-    with open(history_file, 'r') as f:
-        data_history = json.load(f)
-    with open(future_file, 'r') as f:
-        data_future = json.load(f)
-    with open(dataset+'conf.json', 'r') as f:
-        conf = json.load(f)
-    for mode in ['attention']:
-        conf['attention'] = mode
-        conf['loss_mode'] = 0  # bceloss
-        para_path = glob.glob('./models/'+dataset+'/*')
-        keyset_file = '../keyset/'+dataset+'_keyset_'+str(fold_id)+'.json'
-        print(keyset_file)
-        pred_file = 'pred/'+dataset+'_'+mode+'_pred'+str(fold_id)+'.json'
-        with open(keyset_file, 'r') as f:
-            keyset = json.load(f)
-        conf['item_num'] = keyset['item_num']
-        conf['device'] = torch.device("cpu")
-        keyset_test = keyset['test']
+# ===== 絕對路徑 =====
+ckpt_path   = r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\methods\dream\models\CRSP-recall20-0-0-1--Apr-24-2025_19-56-44.pth"
+history_file= r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\jsondata\CRSP_history.json"
+keyset_file = r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\keyset\CRSP_keyset_0.json"
+pred_file   = r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\methods\dream\pred\Dream_pred.json"
 
-        checkpoint_file = []
-        for path in para_path:
-            path_l = path.split('-')
-            if path_l[3] == mode and path_l[4] == str(fold_id):
-                checkpoint_file.append(path)
+# ===== 讀資料 =====
+with open(history_file) as f: data_history = json.load(f)
+with open(keyset_file)  as f: keyset       = json.load(f)
 
-        model = NBRNet(conf, keyset)
-        checkpoint = torch.load(checkpoint_file[0], map_location=torch.device('cpu'))
-        model.load_state_dict(checkpoint['state_dict'])
-        message_output = 'Loading model structure and parameters from {}'.format(checkpoint_file)
-        print(message_output)
-        model.eval()
-        pred_dict = dict()
-        for user in keyset_test:
-            basket = [data_history[user][1:-1]]
-            cand = [[item for item in range(keyset['item_num'])]]
-            scores = model.forward(basket, cand)
-            pred_dict[user] = scores[0].detach().numpy().argsort()[::-1][:100].tolist()
+# ===== 從 checkpoint 讀出“當時的” config =====
+ckpt = torch.load(ckpt_path, map_location='cpu')
+conf = ckpt['config']                     # 完整保留當時 hidden_size、attention…
 
-        with open(pred_file, 'w') as f:
-            json.dump(pred_dict, f)
+conf['device']   = torch.device('cpu')
+conf['item_num'] = keyset['item_num']     # 若 keyset 一樣就無需改
+
+# ===== 建模並載入權重 =====
+model = NBRNet(conf, keyset)
+model.load_state_dict(ckpt['state_dict'])   # 不再報 size / missing key
+model.eval()
+
+# ===== 產生 Top‑100 推薦 =====
+pred = {}
+for uid in keyset['test']:
+    basket_seq = [data_history[uid][1:-1]]
+    cand       = [[i for i in range(conf['item_num'])]]
+    scores     = model.forward(basket_seq, cand)[0].detach().numpy()
+    pred[uid]  = scores.argsort()[::-1][:100].tolist()
+
+os.makedirs(os.path.dirname(pred_file), exist_ok=True)
+with open(pred_file, 'w', encoding='utf-8') as f:
+    json.dump(pred, f)
+print('Prediction saved →', pred_file)

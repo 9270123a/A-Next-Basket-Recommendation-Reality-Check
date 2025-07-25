@@ -1,0 +1,4 @@
+model_checkpoint_path: "C:\\Users\\user\\NBR-Project\\A-Next-Basket-Recommendation-Reality-Check\\methods\\beacon\\results/models/CRSP_0/epoch_2/model.ckpt"
+all_model_checkpoint_paths: "C:\\Users\\user\\NBR-Project\\A-Next-Basket-Recommendation-Reality-Check\\methods\\beacon\\results/models/CRSP_0/epoch_0/model.ckpt"
+all_model_checkpoint_paths: "C:\\Users\\user\\NBR-Project\\A-Next-Basket-Recommendation-Reality-Check\\methods\\beacon\\results/models/CRSP_0/epoch_1/model.ckpt"
+all_model_checkpoint_paths: "C:\\Users\\user\\NBR-Project\\A-Next-Basket-Recommendation-Reality-Check\\methods\\beacon\\results/models/CRSP_0/epoch_2/model.ckpt"

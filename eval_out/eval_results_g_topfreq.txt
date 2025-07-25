@@ -1,0 +1,15 @@
+############ CRSP - g_topfreq ############ 
+Fold 0, recall=0.1743
+basket size: 10
+recall, ndcg, hit: 0.1743 0.2252 0.7180
+repeat-explore ratio: 0.4012 0.5988
+repeat-explore recall: 0.1779 0.0929
+repeat-explore hit: 0.7175 0.1605
+
+Fold 0, recall=0.2708
+basket size: 20
+recall, ndcg, hit: 0.2708 0.2932 0.7787
+repeat-explore ratio: 0.3624 0.6376
+repeat-explore recall: 0.2729 0.1769
+repeat-explore hit: 0.7768 0.2922
+

@@ -1,0 +1,15 @@
+############ CRSP - upcf ############ 
+Fold 0, recall=0.5925
+basket size: 10
+recall, ndcg, hit: 0.5925 0.6674 0.9918
+repeat-explore ratio: 0.7565 0.2435
+repeat-explore recall: 0.6090 0.0395
+repeat-explore hit: 0.9951 0.0741
+
+Fold 0, recall=0.7256
+basket size: 20
+recall, ndcg, hit: 0.7256 0.7692 0.9951
+repeat-explore ratio: 0.6079 0.3921
+repeat-explore recall: 0.7419 0.1570
+repeat-explore hit: 0.9984 0.2469
+

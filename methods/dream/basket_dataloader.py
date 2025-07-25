@@ -1,6 +1,45 @@
 
 from torch.utils.data import Dataset, DataLoader
 import json
+from typing import List, Set
+
+def get_repeat_candidates(user_baskets: List[List[List[int]]]) -> List[List[int]]:
+    """
+    針對每位使用者，回傳曾經買過的所有 item（去重後）。
+    Args
+        user_baskets : list            # len = #users
+            [ [basket1, basket2, ...], # 每個 basket 是 item id list
+              ... ]
+    Returns
+        repeat_cand : list[list[int]]  # 與 user_baskets 同長度
+    """
+    repeat_cand = []
+    for baskets in user_baskets:
+        seen: Set[int] = set()
+        for basket in baskets:
+            seen.update(basket)
+        repeat_cand.append(list(seen))        # 轉回 list 方便後續 tensor 化
+    return repeat_cand
+
+
+def get_explore_candidates(user_baskets: List[List[List[int]]],
+                           total_items: int) -> List[List[int]]:
+    """
+    針對每位使用者，回傳「尚未買過」的 item 列表 (= 探索候選)。
+    Args
+        user_baskets : 同上
+        total_items :  int             # 資料集中 item 的總數
+    Returns
+        explore_cand : list[list[int]]
+    """
+    all_items: Set[int] = set(range(total_items))
+    explore_cand = []
+    for baskets in user_baskets:
+        seen: Set[int] = set()
+        for basket in baskets:
+            seen.update(basket)
+        explore_cand.append(list(all_items - seen))
+    return explore_cand
 
 
 class BasketDataset(Dataset):

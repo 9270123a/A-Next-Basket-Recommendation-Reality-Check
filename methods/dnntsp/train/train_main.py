@@ -5,14 +5,17 @@ import sys
 import os
 import shutil
 sys.path.append("..")
-from utils.load_config import get_attribute
-from utils.data_container import get_data_loader
-from utils.loss import BPRLoss, WeightMSELoss
-from utils.util import get_class_weights
+from load_config import get_attribute
+from data_container import get_data_loader
+from loss import BPRLoss, WeightMSELoss
+from util import get_class_weights
 
-from model.temporal_set_prediction import temporal_set_prediction
+from temporal_set_prediction import temporal_set_prediction
 from train.train_model import train_model
 
+
+sys.path.append(r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\methods\dnntsp\utils")
+print(sys.path)  # 打印出 sys.path 來確認路徑是否正確
 
 def create_model():
 
@@ -56,7 +59,7 @@ def train():
     loss_func = create_loss(loss_type=get_attribute('loss_function'))
 
     # 训练
-    model_folder = f"../save_model_folder/{get_attribute('data')}/{get_attribute('save_model_folder')}"
+    model_folder = rf"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\methods\dnntsp\save_model_folder"
     tensorboard_folder = f"../runs/{get_attribute('data')}/{get_attribute('save_model_folder')}"
 
     shutil.rmtree(model_folder, ignore_errors=True)

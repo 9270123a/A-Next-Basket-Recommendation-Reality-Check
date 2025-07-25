@@ -37,7 +37,7 @@ class Trainer(object):
         self.train_file = config['train_file']
         self.tgt_file = config['tgt_file']
         self.data_config_file = config['data_config_file']
-        self.checkpoint_dir = config['checkpoint_dir']
+        self.checkpoint_dir = r"C:\Users\user\NBR-Project\A-Next-Basket-Recommendation-Reality-Check\methods\dream\models"
         ensure_dir(self.checkpoint_dir)
         saved_model_file = '{}-{}.pth'.format(self.config['model_name'], get_local_time())
         self.saved_model_file = os.path.join(self.checkpoint_dir, saved_model_file)
@@ -293,7 +293,7 @@ class Trainer(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='dunnhumby', help='Dataset')
+    parser.add_argument('--dataset', type=str, default='CRSP', help='Dataset')
     parser.add_argument('--fold_id', type=int, default=0, help='x')
     parser.add_argument('--loss_mode', type=int, default=0, help='x')
     parser.add_argument('--attention', type=int, default=0)
@@ -308,7 +308,7 @@ if __name__ == '__main__':
         train_config = json.load(f)
     train_config['valid_metric'] = "recall20"
     train_config['loss_mode'] = loss_mode
-    train_config['data_config_file'] = train_config['data_config_file']+str(fold_id)+'.json'
+    train_config['data_config_file'] = train_config['data_config_file']
     train_config['attention'] = args.attention
     train_config['model_name'] = f"{dataset}-recall20-{loss_mode}-{fold_id}-{attention}-"
 
@@ -321,7 +321,7 @@ if __name__ == '__main__':
     validate_dataset = BasketDataset(train_config, mode='val')
     model = NBRNet(train_config, dataset_config)
     print('Device:', train_config['device'])
-    sys.stdout.flush()
+    sys.stdout.flush() 
     model.to(train_config['device'])
     trainer = Trainer(train_config, model)
     trainer.fit(basket_dataset, valid_data=validate_dataset)

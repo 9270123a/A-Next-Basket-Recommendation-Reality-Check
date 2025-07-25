@@ -1,49 +1,55 @@
 import scipy.sparse as sp
 import numpy as np, os, re, itertools, math
+import json
 
-
-def build_knowledge(training_instances, validate_instances):
-    MAX_SEQ_LENGTH = 0
+def build_knowledge(training_instances, validate_instances, test_instances):
+    MAX_SEQ_LENGTH = 50
     item_freq_dict = {}
 
-    for line in training_instances:
-        elements = line.split("|")
+    for elements in training_instances:
+        # elements = line.split("|")
 
         if len(elements) - 1 > MAX_SEQ_LENGTH:
             MAX_SEQ_LENGTH = len(elements) - 1
 
-        if len(elements) == 3:
-            basket_seq = elements[1:]
-        else:
-            basket_seq = [elements[-1]]
+        # if len(elements) == 3:
+        #     basket_seq = elements[1:]
+        # else:
+        #     basket_seq = [elements[-1]]
 
-        for basket in basket_seq:
-            item_list = re.split('[\\s]+', basket)
-            for item_obs in item_list:
+        for basket in elements:
+            # item_list = re.split('[\\s]+', basket)
+            for item_obs in basket:
                 if item_obs not in item_freq_dict:
                     item_freq_dict[item_obs] = 1
                 else:
                     item_freq_dict[item_obs] += 1
 
-    for line in validate_instances:
-        elements = line.split("|")
+    for elements in validate_instances:
+        # elements = line.split("|")
 
         if len(elements) - 1 > MAX_SEQ_LENGTH:
             MAX_SEQ_LENGTH = len(elements) - 1
 
-        label = int(elements[0])
-        if label != 1 and len(elements) == 3:
-            basket_seq = elements[1:]
-        else:
-            basket_seq = [elements[-1]]
+        # label = int(elements[0])
+        # if label != 1 and len(elements) == 3:
+        #     basket_seq = elements[1:]
+        # else:
+        #     basket_seq = [elements[-1]]
 
-        for basket in basket_seq:
-            item_list = re.split('[\\s]+', basket)
-            for item_obs in item_list:
+        for basket in elements:
+            # item_list = re.split('[\\s]+', basket)
+            for item_obs in basket:
                 if item_obs not in item_freq_dict:
                     item_freq_dict[item_obs] = 1
                 else:
                     item_freq_dict[item_obs] += 1
+
+    for elements in test_instances:
+        for basket in elements:
+            for item_obs in basket:
+                if item_obs not in item_freq_dict:
+                    item_freq_dict[item_obs] = 1
 
     items = sorted(list(item_freq_dict.keys()))
     item_dict = dict()
@@ -57,6 +63,7 @@ def build_knowledge(training_instances, validate_instances):
 
     reversed_item_dict = dict(zip(item_dict.values(), item_dict.keys()))
     return MAX_SEQ_LENGTH, item_dict, reversed_item_dict, item_probs
+
 
 def build_sparse_adjacency_matrix_v2(training_instances, validate_instances, item_dict):
     NB_ITEMS = len(item_dict)
@@ -237,3 +244,79 @@ def remove_diag(adj_matrix):
     new_adj_matrix.setdiag(0.0)
     new_adj_matrix.eliminate_zeros()
     return new_adj_matrix
+
+def get_instances(data_path, keyset_path, mode):
+    with open(data_path, 'r') as f:
+        data = json.load(f)
+    with open(keyset_path, 'r') as f:
+        keyset = json.load(f)
+    instances = []
+    uids = keyset[mode]
+    for uid in uids:
+        instances.append(data[uid])
+    return instances, uids
+
+
+def seq_batch_generator(raw_lines, item_dict, batch_size=32, is_train=True, uids=None):
+    total_batches = compute_total_batches(len(raw_lines), batch_size)
+
+    O = []
+    S = []
+    L = []
+    Y = []
+    U = []
+
+    batch_id = 0
+    while 1:
+        lines = raw_lines[:]
+
+        if is_train:
+            np.random.shuffle(lines)
+
+        for (elements, uid) in zip(lines, uids):
+            # elements = line.split("|")
+
+            # label = float(elements[0])
+            bseq = elements[:-1]
+            tbasket = elements[-1]
+
+            # Keep the length for dynamic_rnn
+            L.append(len(bseq))
+
+            # Keep the original last basket
+            O.append(tbasket)
+
+            # Add the target basket
+            # target_item_list = re.split('[\\s]+', tbasket)
+            Y.append(create_binary_vector(tbasket, item_dict))
+
+            s = []
+            for basket in bseq:
+                # item_list = re.split('[\\s]+', basket)
+                id_list = [item_dict[item] for item in basket]
+                s.append(id_list)
+            S.append(s)
+            #
+            # if len(S) % batch_size == 0 and uids==None:
+            #     yield batch_id, {'S': np.asarray(S), 'L': np.asarray(L), 'Y': np.asarray(Y), 'O': np.asarray(O)}
+            #     S = []
+            #     L = []
+            #     O = []
+            #     Y = []
+            #     batch_id += 1
+            U.append(uid)
+
+            if len(S) % batch_size == 0 and uids != None:
+                yield batch_id, {'S': np.asarray(S), 'L': np.asarray(L), 'Y': np.asarray(Y), 'O': np.asarray(O), 'U':np.asarray(U)}
+                S = []
+                L = []
+                O = []
+                Y = []
+                U = []
+                batch_id += 1
+
+
+            if batch_id == total_batches:
+                batch_id = 0
+                if not is_train:
+                    break

@@ -6,7 +6,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser()
     # Path the dataset (for now we only applied it to the instacart dataset)
-    parser.add_argument('--data_path', default='../data/instacart', help="")
+    parser.add_argument('--data_path', default='../data/CRSP', help="")
     # Preprocessing args
     parser.add_argument('--item_threshold', default=10, type=int)
     parser.add_argument('--basket_threshold', default=2, type=int)
